@@ -12,5 +12,5 @@ export const socialLinks = {
   github: "https://github.com/vrn21",
   instagram: "https://www.instagram.com/vrn21.x",
   linkedin: "https://www.linkedin.com/in/hi-from-varun-",
-  email: "mailto:varunkkv.mec@gmail.com",
+  email: "mailto:varunkkv.mec@gmal.com",
 };

@@ -3,25 +3,25 @@ import Base from "../../layouts/Base.astro";
 
 const projects = [
   {
-    title: "Project One",
-    year: 2023,
+    title: "ShortDB",
+    tech: "Rust, gRPC, SkipLists,FileOps",
     description:
-      "Lorem ipsum dolor sit amet, consectetur adipisicing elit. Laboriosam veritatis dolorem rem praesentium dicta labore, at laudantium quisquam.",
-    url: "https://example.com/",
+      "Engineered a persistent key-value store with async client-server communication, implementing a LSM-Tree data structure inspired by RocksDB and LevelDB, and applied it in a full-stack application.",
+    url: "https://github.com/hrefto/shorterdb",
   },
   {
-    title: "Project Two",
-    year: 2022,
+    title: "Serverless Platform",
+    tech: "Rust, WASM, Actix-web, Actix",
     description:
-      "Lorem ipsum dolor sit amet, consectetur adipisicing elit. Laboriosam veritatis dolorem rem praesentium dicta labore, at laudantium quisquam.",
-    url: "https://example.com/",
+      "Engineered a Rust-based serverless platform that efficiently hosts user-defined functions by leveraging WebAssembly for lightweight execution, an actor system with Actix for parallelism, and integrated object storage, enabling seamless code compilation and on-demand execution via API calls.",
+    url: "https://github.com/fnhub-io/",
   },
   {
-    title: "Project Three",
-    year: 2021,
+    title: "Global Information Tracker",
+    tech:"Rust, Clap",
     description:
-      "Lorem ipsum dolor sit amet, consectetur adipisicing elit. Laboriosam veritatis dolorem rem praesentium dicta labore, at laudantium quisquam.",
-    url: "https://example.com/",
+      "Engineered a global information tracker, a version control system similar to Git, implementing core functionalities like init, cat-file, hash-object, and ls-tree, building a robust CLI with Clap, and utilizing zlib for efficient compression and decompression.",
+    url: "https://github.com/vrn21/global_information_tracker",
   },
 ];
 
@@ -46,7 +46,7 @@ const description = "My Projects";
                   {project.title}
                 </span>
                 <span class="text-neutral-600 dark:text-neutral-400 tabular-nums text-sm">
-                  {project.year}
+                  {project.tech}
                 </span>
               </div>
               <p class="prose prose-neutral dark:prose-invert pt-3">

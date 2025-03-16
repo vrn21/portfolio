@@ -4,6 +4,8 @@ import { socialLinks } from "../config";
 import { Image } from "astro:assets";
 ---
 
+
+
 <Base>
   <section>
     <a href={socialLinks.twitter} target="_blank">
@@ -16,50 +18,38 @@ import { Image } from "astro:assets";
       />
     </a>
 
+    <script>
+            function me_when() {
+                var a = new Date(2004, 6, 15);
+                var b = new Date();
+                var c = b - a;
+                var d = c / (1000 * 60 * 60 * 24 * 365.25);
+                document.getElementById('my_age').innerHTML = '' + Math.floor(d) + '.' + (d % 1).toFixed(9).substr(2);
+            }
+            setInterval(me_when, 1);
+
+    </script>
+
     <h1 class="mb-8 text-2xl font-medium tracking-tight">
-      Portfolio, made simple!
+        hi I'm K V <i><b>Varun</b></i> Krishnan
     </h1>
 
     <div class="prose prose-neutral dark:prose-invert">
       <p>
-        A clean, fast, and lightweight portfolio template built with Astro,
-        Vercel, and Tailwind CSS for optimal performance.
+      I'm a <span id="my_age"></span>       year old kid, trying to find meaning in life.
       </p>
       <p>
-        Astrofolio includes all the essentials for a stunning portfolio: SEO,
-        MDX support, RSS, Atom, & JSON feeds, analytics, tweet & YouTube embeds,
-        KaTeX integration, and{" "}
-        <a
-          target="_blank"
-          href="https://github.com/vikas5914/Astrofolio?tab=readme-ov-file#features">
-          more
-        </a>
-        .
+        During the days, there's a chance that you'll find me at <a href="https://mec.ac.in">Govt. Model Engineering College
+        </a> and on weekends at <a href="https://maps.app.goo.gl/DsTQAUSdMrDeCnYk9">Kunnamkulam</a> or <a href="https://maps.app.goo.gl/EtzLbs5MBFVH5StGA">Kochi</a> in Kerala, India
+      </p>
+
+      <p>
+        Professionally I mostly code in rust. You could see my works <a href="https://github.com/vrn21">here.</a>
+        I'm currently interning at <a href="https://mecha.so">Mecha Systems </a>, where i'm helping the team build a debian based OS called <a href="https://github.com/mecha-org">MechanixOS</a>, for a <a href="https://mecha.so/comet">handheld linux computer</a>.
+        I've also interned at <a href="https://fileago.com">FileAgo</a> where we were developing a client side FUSE application using <a href="https://github.com/dokan-dev/dokan-rust">dokan</a>.
       </p>
       <p>
-        Astrofolio is{" "}
-        <a href={socialLinks.github} target="_blank"> open-source </a>{" "}
-        and fully customizable, making it easy to add more features.
-      </p>
-      <p>
-        <a
-          href="https://vercel.com/new/clone?repository-url=https://github.com/vikas5914/Astrofolio"
-          target="_blank">
-          Deploy
-        </a>{" "}
-        your Astrofolio site with Vercel in minutes and follow the set up instructions
-        in the{" "}
-        <a href="/blog/getting-started">Getting Started</a> post.
-      </p>
-      <p>
-        Next.js built and maintained by{" "}
-        <a href="https://imsirius.xyz/" target="_blank"> Sirius </a>
-        <br />
-        Astro buit and maintained by <a
-          href="https://kapadiya.net/"
-          target="_blank">
-          Vikas
-        </a> .
+      More about me, I used to <a href="/design">design</a>, a little bit of Option trading during the weekdays and Weekends for <a href="https://realmadrid.com">Los Blancos</a> 🤍
       </p>
     </div>
   </section>

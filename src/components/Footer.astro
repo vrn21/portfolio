@@ -2,7 +2,7 @@
 import { metaData, socialLinks } from "../config";
 import { Icon } from "astro-icon/components";
 
-const YEAR = new Date().getFullYear();
+
 
 const socialIcons = [
   { href: socialLinks.twitter, icon: "fa6-brands:x-twitter" },
@@ -14,13 +14,13 @@ const socialIcons = [
 ---
 
 <small class="block lg:mt-24 mt-16 text-[#1C1C1C] dark:text-[#D4D4D4]">
-  <time>© {YEAR}</time>{" "}
+
   <a
     class="no-underline"
     href={socialLinks.twitter}
     target="_blank"
     rel="noopener noreferrer">
-    {metaData.title}
+    hello [at] vrn21 [dot] com
   </a>
   <div
     class="flex text-lg gap-3.5 float-right transition-opacity duration-300 hover:opacity-90">
@@ -31,9 +31,7 @@ const socialIcons = [
         </a>
       ))
     }
-    <a href="/rss.xml" target="_self">
-      <Icon name="fa6-solid:rss" />
-    </a>
+
   </div>
 </small>
 
