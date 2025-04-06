@@ -19,14 +19,19 @@ import { Image } from "astro:assets";
     </a>
 
     <script>
-            function me_when() {
-                var a = new Date(2004, 6, 15);
-                var b = new Date();
-                var c = b - a;
-                var d = c / (1000 * 60 * 60 * 24 * 365.25);
-                document.getElementById('my_age').innerHTML = '' + Math.floor(d) + '.' + (d % 1).toFixed(9).substr(2);
-            }
-            setInterval(me_when, 1);
+    function me_when() {
+           var a = new Date(2004, 6, 15);
+           var b = new Date();
+           var c = b - a;
+           var d = c / (1000 * 60 * 60 * 24 * 365.25);
+           document.getElementById('my_age').innerHTML = '' + Math.floor(d) + '.' + (d % 1).toFixed(9).substr(2);
+       }
+
+       // Run immediately on load
+       me_when();
+
+       // Then set the interval
+       setInterval(me_when, 1);
 
     </script>
 
@@ -36,7 +41,7 @@ import { Image } from "astro:assets";
 
     <div class="prose prose-neutral dark:prose-invert">
       <p>
-      I'm a <span id="my_age"></span>       year old kid, trying to find meaning in life.
+      I'm a <span id="my_age_container" class="inline-block" style="width: 80px; text-align: right; margin-right: 25px;"><span id="my_age"></span></span>      year old kid, trying to find meaning in life.
       </p>
       <p>
         During the days, there's a chance that you'll find me at <a href="https://mec.ac.in">Govt. Model Engineering College
