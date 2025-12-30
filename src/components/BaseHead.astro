@@ -21,6 +21,12 @@ const openGraphImage = image
   : openGraphImageUrl;
 ---
 
+<!-- Required OG meta tags for astro-opengraph-images -->
+<meta property="og:title" content={title || metaData.title} />
+<meta property="og:url" content={url.href} />
+<meta property="og:type" content="website" />
+<meta property="og:image" content={openGraphImage} />
+
 <SEO
   title={title}
   titleTemplate=`%s | ${metaData.title}`

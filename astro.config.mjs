@@ -1,4 +1,5 @@
 import { defineConfig } from "astro/config";
+import fs from "fs";
 import mdx from "@astrojs/mdx";
 import sitemap from "@astrojs/sitemap";
 import tailwind from "@astrojs/tailwind";
@@ -13,6 +14,13 @@ import opengraphImages, { presets } from "astro-opengraph-images";
 // https://astro.build/config
 export default defineConfig({
   site: "https://astrofolio.pages.dev",
+  redirects: {
+    "/github": "https://github.com/vrn21",
+    "/linkedin": "https://linkedin.com/in/hi-from-varun-",
+    "/twitter": "https://x.com/theVRN21",
+    "/design": "https://www.figma.com/design/lLZ2Vxs5FLIAhwlUDUuC0V/PortFolio",
+    "/resume": "https://drive.google.com/file/d/1vBgSsdoY_azDmjP9QW31u9Xn9k5kSOas/view?usp=sharing",
+  },
   integrations: [
     mdx({
       image: {
@@ -54,14 +62,11 @@ export default defineConfig({
         "fa6-brands": ["x-twitter", "github", "instagram", "linkedin-in"],
       },
     }),
-    sitemap(),
     opengraphImages({
       render: presets.waveSvg,
       options: {
         fonts: [
           {
-            name: "Roboto",
-            name: "Roboto",
             name: "Roboto",
             weight: 400,
             style: "normal",
