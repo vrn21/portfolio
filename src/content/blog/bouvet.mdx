@@ -27,6 +27,8 @@ There is real hype in this space right now, and it is not hard to see why. Agent
 
 A sandbox changes that relationship entirely.
 
+At a very high level, a sandbox for agents is just a controlled execution environment. It gives an agent a place to work without touching your real system. Inside a sandbox, an agent can read and write files, list directories, execute commands, and interact with a temporary filesystem as if it were its own machine. Under the hood, this usually means spinning up an isolated environment like a container or a microVM, handing the agent access to it, and tearing everything down once the task is done. The goal is not to limit what the agent can do, but to make sure whatever it does stays contained.
+
 To me, an agent with a sandbox starts to resemble something closer to an employee than a tool. It has autonomy, a defined workspace, and clear boundaries. You let it operate within those boundaries, observe the output, and shut it down when the job is done. The recent trend of founders spinning up dozens of parallel Claude Code instances and half-jokingly calling them “founding engineers” might sound exaggerated, but there is a real idea underneath it. Autonomy matters. Agency matters. Intelligence alone is not enough.
 
 If you squint a little, an agent running inside its own isolated environment feels like a small step toward AGI/ASI. Not because it is smarter, but because it is allowed to act safely. In that sense, sandboxes are not just about security. They are about trust. They are about letting systems operate independently without constantly watching over their shoulder.
