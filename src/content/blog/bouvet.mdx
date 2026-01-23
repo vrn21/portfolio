@@ -1,0 +1,110 @@
+---
+title: "Bouvet: A Sandbox for Agents"
+publishedAt: "2026-01-23"
+summary: "A sandbox for agents to play around with."
+tags: "AI, Agents, Rust, microVMs, Firecracker"
+---
+
+Sometime last year, I started noticing a pattern on X.
+
+Not a loud one. Not a viral one either. Just a steady stream of posts from people building AI agents who were all circling the same idea from different angles: the runtime story for agents is still missing.
+
+Not models. Not prompts. Not tools.
+
+Runtimes.
+
+This topic stayed with me longer than I expected.
+
+At first, I treated it like most people do. I bookmarked a few threads. Read a couple of blog posts. Nodded along. Then moved on. But the more I read, the clearer it became that this wasn’t an AI problem in the way we usually define one. It was an infrastructure problem that happened to surface because of AI.
+
+Once I started looking at it from that angle, everything clicked into place.
+
+I began tracing the problem backward. Before agents, we already knew how dangerous arbitrary code execution could be. We had spent years building containers, virtual machines, and sandboxes to isolate untrusted workloads. The difference now was scale and intent. Agents are not just executing code once. They iterate. They retry. They explore. And they do it fast.
+
+At that point, the direction was clear. This was less about building “AI infrastructure” and more about revisiting old infrastructure questions under new pressure. How do you isolate compute cheaply? How do you tear it down cleanly? How do you make failure safe?
+
+There is real hype in this space right now, and it is not hard to see why. Agents are no longer toy scripts that answer questions. They clone repositories, modify files, run tests, spin up services, and sometimes make decisions that persist beyond a single execution. Running those commands blindly on your own machine feels a bit like handing over root access to something you do not fully understand yet. That discomfort is hard to ignore once you have felt it.
+
+A sandbox changes that relationship entirely.
+
+To me, an agent with a sandbox starts to resemble something closer to an employee than a tool. It has autonomy, a defined workspace, and clear boundaries. You let it operate within those boundaries, observe the output, and shut it down when the job is done. The recent trend of founders spinning up dozens of parallel Claude Code instances and half-jokingly calling them “founding engineers” might sound exaggerated, but there is a real idea underneath it. Autonomy matters. Agency matters. Intelligence alone is not enough.
+
+If you squint a little, an agent running inside its own isolated environment feels like a small step toward AGI/ASI. Not because it is smarter, but because it is allowed to act safely. In that sense, sandboxes are not just about security. They are about trust. They are about letting systems operate independently without constantly watching over their shoulder.
+
+This is also why so many teams are racing to build them well.
+
+Companies like [Modal](https://modal.com/), [Blaxel](https://blaxel.ai/), [E2B](https://e2b.dev/), [Daytona](https://daytona.io/), [Vercel](https://vercel.com/docs/vercel-sandbox/), [Cloudflare](https://sandbox.cloudflare.com/), and [Beam](https://beam.cloud/) are all approaching the same core problem from slightly different angles. Some optimize for cold-start latency. Others focus on developer experience, persistence, or tight integration with existing workflows. Many of them are shaving milliseconds where it matters, because at scale, those milliseconds add up.
+
+It is easy to underestimate how hard this work is until you try to reason through it yourself.
+
+A sandbox has to be fast, or agents feel sluggish. It has to be secure, or nothing else matters. It has to clean up after itself, or costs quietly spiral. Failures are inevitable when systems are allowed to act autonomously. Getting any one of these right is non-trivial. Getting all of them right at once is serious engineering.
+
+For a while, I stayed on the sidelines, watching this space evolve. Reading launch posts. Skimming benchmarks. Noting how often the word “runtime” appeared in conversations that used to be about prompts or models. Eventually, curiosity took over. Not because I thought I could build something better, but because I wanted to understand the problem from the inside.
+
+That curiosity led me to ask a simple question: if I were to build a sandbox myself, what would I prioritize, and what would I deliberately leave out?
+
+
+Once I decided to stop treating this as an abstract problem and actually build something, the work changed shape very quickly.
+
+Designing a sandbox sounds clean on paper. In practice, it becomes a series of small, opinionated decisions that stack on top of each other. Most of them are not about AI at all. They are about operating systems, tooling friction, and how much complexity you are willing to own.
+
+Projects like [microsandbox](https://github.com/microsandbox/microsandbox) gave me a clean, stripped-down view of what a minimal sandbox could look like. Abhishek’s work on [Arrakis](https://github.com/abshkbh/arrakis), especially his [walkthrough video](https://youtu.be/wsFd22SL1s8?si=1HtWbpvitPRGA8W0), helped connect the dots end to end. It showed that this wasn’t magic. It was careful system design. Thoughtful trade-offs. A lot of discipline around what not to allow. Around the same time, I came across a detailed write-up on sandboxing approaches for AI workloads by [Luis Cardoso](https://www.luiscardoso.dev/blog/sandboxes-for-ai) that walked through virtualization techniques in a very grounded way. 
+
+I did briefly consider the obvious path. Dockerfiles and container images are flexible, familiar, and easy to spin up and tear down. They work well for many workloads, and honestly, they are still a solid choice in plenty of scenarios. But for this problem, they felt heavier than necessary. WebAssembly crossed my mind too. It is fast and elegant, but it comes with constraints around language support and runtime behavior that felt limiting for general-purpose agent execution.
+
+What sat quietly in the middle was a different option. MicroVMs.
+
+They offered stronger isolation than containers, without the full weight of traditional virtual machines. Enough flexibility to support real runtimes. Enough safety to reduce blast radius. Not perfect, but honest about their trade-offs.
+
+
+I started from a place of familiarity. Rust is simply where I am most comfortable reasoning about systems, memory, and failure modes. From there, the decision to use [**Firecracker**](https://github.com/firecracker-microvm/firecracker/) felt natural. Not because it is trendy, but because it sits in a useful middle ground. Strong isolation without pretending to be something it is not.
+
+Rather than managing Firecracker directly, I leaned onto a crate Fireplot that handles much of the heavy lifting,  That allowed me to focus on structure instead of plumbing. Over time, the system settled into a few clear layers. One responsible for managing microVM lifecycles. Another for communication and coordination of microVMs. A MCP layer above that. And finally, a small component that lives inside each microVM and speaks back to the host to perform allowed operations.
+
+
+Interestingly, much of the code itself was not written by hand. I relied heavily on Opus 4.5 for implementation, especially for the more repetitive Rust scaffolding. I did not expect it to handle this domain particularly well, but it surprised me. The code was clean, readable, and mostly correct. This was not rocket science, but it was still reassuring to see an agent write real systems code without constantly fighting the compiler.
+
+To make that work, I used a divide-and-conquer approach. One master agent acted as a kind of coordinator, thinking about system design and breaking work into clear chunks. Other agents owned specific layers. Bugs were routed back to the agent responsible for that part of the system. For a while, this worked remarkably well. Context stayed contained. Progress was steady. Eventually, the coordinating agent started to struggle with context rot under the weight of logs, errors, and accumulated state.
+
+Once the layers were in place, a more physical problem appeared: the filesystem.
+
+Each microVM needs a root filesystem. In theory, this is straightforward. In practice, building a rootfs that includes Python, Rust, Node.js, git, curl, and a few other tools turned into its own project. On macOS, compiling and testing these images was awkward. I ended up using Docker to assemble a development image, then another Docker-based step to convert that image into an ext4 filesystem usable by the microVMs.
+
+Every small change to the communication layer meant rebuilding the rootfs, uploading it to S3, and retrying. It was slow and brittle, but there was no clean shortcut. This is the kind of work that rarely makes it into diagrams, but consumes real time. That too there were architecture differences in many scenarios. 
+
+The next surprise came late. Very late.
+
+Firecracker requires access to `/dev/kvm`, which means a real Linux machine with hardware virtualization enabled. My primary machine is a mac, and its out of the question. I had an old beat up lenovo machine running debian, but firecracker refused to cooperate for reasons that were never entirely clear. By the time I realized this was a dead end, most of the system was already written.
+
+The only viable option left was a bare metal server. That immediately raised the cost floor and pushed everything into the cloud. I chose AWS, partly out of familiarity and partly out of necessity. Navigating the console manually felt painful, so I leaned fully into Terraform. One configuration, one command, and the entire machine came up exactly how I needed it.
+
+Even then, things broke.
+
+At one point, the microVMs refused to communicate with the host entirely. Logs looked fine. Networking appeared correct. I threw every debugging tool I knew at it. Claude had access to all the logs and still failed to identify the issue after many attempts. In the end, the cause was almost embarrassing. The binary running inside the microVM was outdated. That single mismatch took hours to track down.
+
+After fixing it, everything clicked into place.
+
+Today, the entire setup is automated. Dockerfiles build the images. Systemd manages services. Terraform provisions the infrastructure. Spinning up a bare metal server with the system running is now a single command. Getting there took far more effort than expected, but that effort reshaped how I think about agent infrastructure.
+
+Fun fact: the project is named after Bouvet Islands which is one of the most remote Islands on Plant Earth. 
+
+By the time Bouvet started to feel usable, it was clear that this was no longer just an exercise in understanding microVMs. It had turned into a small, opinionated system with edges, gaps, and a fairly honest sense of what it can and cannot do.
+
+Today, an agent interacting with Bouvet gets something quite concrete. A sandboxed environment with Python, Node.js, Rust, git, and curl already available. Enough tooling to clone repositories, run scripts, compile binaries, and experiment freely without touching the host machine. The isolation is real, and the lifecycle is explicit. When the sandbox is gone, it is gone.
+
+There are also clear limits.
+
+Right now, the system exposes itself purely as an MCP server. That keeps things simple, but it also means the experience is still low-level. There is no SDK yet, no ergonomic wrapper that makes integration feel natural inside an agent framework. Networking is intentionally disabled at the moment, which makes the environment safer but also restrictive. Many real workloads will need controlled network access, and that is something I plan to add carefully rather than by default.
+
+Snapshotting is another missing piece. The ability to pause, rewind, or resume execution would open up entirely new workflows, especially for long-running or exploratory agents. Alongside that, custom root filesystem compilation is high on the list. Letting users define their own toolchains and environments feels essential if this is ever going to be useful beyond my own experiments.
+
+There is also plenty of room to optimize. Each layer works, but none of them are fully squeezed for performance yet. Startup paths can be tightened. Communication can be faster. Resource usage can be more predictable. These are not glamorous changes, but they are the ones that tend to matter over time.
+
+If you have read this far and are curious, the repository lives here:
+https://github.com/vrn21/bouvet
+
+The technical details are documented there more thoroughly than they ever could be in a blog post. If something feels unclear, incomplete, or wrong, opening an issue is more than welcome. Architectural feedback is especially valuable. This space benefits from many perspectives, not just one.
+
+One more thing. Bouvet currently runs on AWS bare metal, which is expensive enough that I do not keep it online continuously. If you want to try it out, feel free to reach out! I am usually happy to spin it up for a few hours.
+
+Agent runtimes are still being figured out in public, through small experiments, imperfect systems, and shared lessons, and Bouvet is simply my way of taking part in that conversation.
