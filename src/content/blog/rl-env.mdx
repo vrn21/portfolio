@@ -1,0 +1,563 @@
+---
+title: "Engineering RL Environments for Beginners"
+publishedAt: "2026-02-21"
+summary: "How to build an RL environment for your application."
+tags: "Docker, Python, RL"
+---
+
+# Engineering RL Environments for Beginners
+### *Rough Outline — For Internal Review*
+
+> **Writing philosophy (delete before publishing):**
+> Open with proof of work, not with definitions. Every section has a TL;DR for skimmers.
+> Show broken things before fixed things. Use "we" for HUD decisions, "you" for reader actions.
+> Mark `[DIAGRAM]` blocks indicate where a visual should live in the final post.
+
+---
+
+## 1. Introduction — Setting Up an RL Environment
+
+> **TL;DR** — You have a web app. You want an agent to learn to interact with it.
+> This post walks you through the full stack: container, tools, tasks, grader, and evaluation loop.
+
+
+You're here because you want to build something for an RL agent to operate inside — not a toy simulation, but a real running service: a web app, an API, a CLI tool, a database-backed backend. The kind of thing you'd actually care whether an agent can use correctly.
+
+This guide assumes you're comfortable with Python, Docker, and the general idea of what an AI agent is. You don't need a background in ML or RL theory — but you do need to be the kind of engineer who reads a `Dockerfile` and understands what it does.
+
+**What is an RL environment, stripped of the jargon?**
+
+It's a process the agent can talk to. The agent sends actions (tool calls), the environment responds with observations (screenshots, stdout, API responses), and at the end of an episode a grader scores the result. That's the entire contract. Everything else — Docker, MCP, task specs — is implementation detail around that core loop:
+
+```
+Agent  ──action──►  Environment
+       ◄─observation──
+                  │
+              [episode ends]
+                  │
+               Grader ──► score ∈ [0.0, 1.0]
+```
+
+```
+[DIAGRAM 1 — The RL loop, annotated for engineers]
+Purpose: Show the agent ↔ environment ↔ grader contract.
+Style: Compact sequence diagram. Action/observation labels on arrows.
+       Grader shown as a separate step after episode termination.
+Tone: Clean, precise — like something you'd see in an RFC or design doc.
+      Not a textbook cartoon.
+```
+
+### The Concrete Setup We're Building
+
+Here's the specific shape of what we'll wire together in this post.
+
+You have a web application — a backend service, a REST API, whatever. You want an RL agent to interact with it: navigate it, mutate its state, complete tasks against it. The key constraint is this: **that web app must run *inside* the environment container.** The agent doesn't reach out to some external network. It talks to a service that boots up inside Docker, alongside the agent's own tooling.
+
+```
+┌─────────────────────────────────────────────────┐
+│              Docker Container (the env)          │
+│                                                  │
+│   ┌──────────────────┐   ┌────────────────────┐  │
+│   │  Your Web App    │   │  MCP Tool Server   │◄─┼── Agent (tool calls)
+│   │  Flask / FastAPI │◄──│  (on :8080)        │  │
+│   │  (on :8000)      │   │  screenshot, click │  │
+│   └──────────────────┘   └────────────────────┘  │
+│                                                  │
+└─────────────────────────────────────────────────┘
+                    │ final state
+                    ▼
+                Grader → score
+```
+
+- **Your web app** starts when the container starts. It listens on an internal port, inaccessible from outside the container.
+- **The MCP tool server** runs in the same container. It exposes the agent's hands: `screenshot`, `click`, `navigate`, `bash`, or whatever domain-specific tools your app needs.
+- **The agent** runs outside the container on the HUD platform. It connects through the tool server — it never has a direct network path to your app.
+- **The grader** runs after the episode ends. It inspects the final state — DB rows, HTTP responses, rendered DOM — and returns a float score.
+
+```
+[DIAGRAM 1a — Webapp-in-container cross-section]
+Purpose: Make the above ASCII concrete with a proper illustration.
+Style: Box-in-box diagram. Outer = Docker container. Inner boxes = web app + tool server.
+       External arrows: agent tool calls (in), grader state check (out).
+       Internal arrow: tool server → HTTP → web app.
+Tone: Engineering diagram. Clean lines, labeled ports, directional arrows.
+      Should feel like it belongs in a system design doc.
+```
+
+Everything in this post — the Dockerfile, the tool server, the task specs, the grader — is implementation detail that supports this architecture. By the end, you'll have a fully wired environment you can run against any agent on the HUD platform.
+
+---
+
+## 2. The Theory Bit — AI Environments 101
+
+> **TL;DR** — An environment is anything that gives the agent observations and accepts its actions.
+
+- What is an "environment" in the context of AI/RL? — Not a Docker container, not a website. A *protocol*.
+- Core concepts (one short paragraph each, no jargon):
+  - **State** — what the agent can observe right now
+  - **Action** — the set of things the agent is allowed to do
+  - **Reward** — the scalar feedback signal after an action
+  - **Episode** — one complete run from start to termination
+- The human analogy table:
+
+| Human | AI Agent |
+|---|---|
+| Eyes | Screenshot / DOM snapshot |
+| Hands | Mouse click / keyboard stroke / tool call |
+| Ears | Terminal stdout / log output |
+| Memory | Context window |
+| Goal | Task prompt |
+| Judge | Grader |
+
+```
+[DIAGRAM 2 — Human vs Agent sensors side-by-side]
+Purpose: Make abstract "state/action" concrete with a human analogy.
+Style: Two-column illustration. Left: a person at a desk. Right: the equivalent
+       agent components labeled. Arrows linking corresponding parts.
+Tone: Fun, slightly cartoon-like. Should be the "aha moment" image.
+```
+
+- The environment as a black box: it doesn't matter what's inside as long as the interface is consistent.
+- Why this black-box property is what makes RL environments composable and testable.
+
+---
+
+## 3. Meet the HUD CLI
+
+> **TL;DR** — One `pip install`, then `hud --version` and you're ready.
+
+- What is HUD? — orchestration layer that runs your environments at scale, tracks trajectories, and surfaces evaluation results.
+- Installing:
+
+```bash
+pip install hud-python   # ← confirm actual package name before publish
+hud --version
+hud login                # opens browser auth flow
+```
+
+- Overview of the commands you'll use in this post:
+
+| Command | What it does |
+|---|---|
+| `hud env init` | Scaffold a new environment |
+| `hud env build` | Build the Docker image locally |
+| `hud env push` | Register your env with the platform |
+| `hud run` | Launch an agent against your environment |
+| `hud grade` | Run the grader manually against a saved trajectory |
+| `hud logs` | Stream container logs for debugging |
+
+```
+[DIAGRAM 3 — HUD CLI mental model]
+Purpose: Show where the CLI sits relative to the user, the local Docker daemon,
+         and the HUD cloud platform.
+Style: Simple layered diagram. Three horizontal bands:
+       "You (terminal)" → "HUD CLI" → "Docker / HUD Cloud"
+Tone: Minimal. Monochrome or dark-terminal aesthetic.
+```
+
+---
+
+## 5. Bootstrapping Your First Environment
+
+> **TL;DR** — Clone the template or use `hud env init`. Either way you get the same folder structure.
+
+Two paths — pick whichever feels more natural:
+
+**Option A — Git clone the HUD template repo**
+```bash
+git clone https://github.com/hud-evals/rl-env-template
+cd rl-env-template
+```
+
+**Option B — Scaffold fresh via CLI**
+```bash
+hud env init my-first-env
+cd my-first-env
+```
+
+Both give you this structure:
+
+```
+my-first-env/
+├── Dockerfile          ← what the agent lives inside
+├── tools/              ← MCP server: the agent's hands
+│   └── server.py
+├── tasks/              ← what the agent is asked to do
+│   └── example.yaml
+├── graders/            ← how we score the agent
+│   └── grade.py
+└── hud.config.yaml     ← platform configuration
+```
+
+```
+[DIAGRAM 4 — Annotated project structure]
+Purpose: Make the folder tree visual and memorable.
+Style: Exploded file-tree illustration. Each file has a callout bubble with a
+       one-line description and an icon (🐳 Dockerfile, 🔧 tools, 📋 tasks, ⚖️ graders).
+Tone: Clean and colorful. Think VSCode sidebar aesthetic.
+```
+
+- Quick sanity check: `hud env build` at this point should succeed with zero code written.
+
+---
+
+## 6. The Environment Itself — Dockerfile & Tools
+
+> **TL;DR** — The Dockerfile defines the world; the tools/ folder defines the agent's hands.
+
+### 6a. The Dockerfile
+
+- What goes in it and *why*:
+  - **Base image** — `ubuntu:22.04` for a vanilla shell env, `hud-evals/browser-base` for web tasks.
+  - **System dependencies** — whatever the agent will interact with (a web server, a DB, a file system).
+  - **A running service** — the env needs to be *alive*, not just exist. Show `CMD` / `ENTRYPOINT`.
+  - **The MCP server** — must start alongside whatever service the agent is testing.
+- Show a real (annotated) example snippet — not a list of what could be there.
+- Common mistake: not exposing ports / not having a health check → show what the failure looks like.
+
+```
+[DIAGRAM 5 — What's inside the container]
+Purpose: Demystify what happens at `docker run` time.
+Style: Cross-section diagram of a Docker container (like a house blueprint).
+       Inside: the target service, the MCP server, and any background daemons.
+       Outside: the HUD agent sending tool calls in through a labeled port arrow.
+Tone: Slightly playful. Show the "inside" of the box.
+```
+
+### 6b. Tools / MCP Server
+
+- What MCP is in one sentence: a standardized protocol so any agent can call tools in any environment without knowing the implementation.
+- The anatomy of a tool definition: name, description, input schema, handler function.
+- Example tools for common env types:
+  - **Browser env**: `screenshot`, `click(x,y)`, `type(text)`, `navigate(url)`
+  - **Code env**: `bash(cmd)`, `read_file(path)`, `write_file(path, content)`
+  - **Custom domain**: whatever API or UI the agent needs to use
+- How the agent discovers available tools (tool listing at episode start).
+- Writing your first custom tool — brief code walkthrough.
+
+---
+
+## 7. Tasks and Graders
+
+> **TL;DR** — A task is what you ask the agent. A grader is how you decide if it succeeded.
+
+### 7a. Tasks
+
+- What a task file looks like (YAML):
+
+```yaml
+# example.yaml
+id: sort-a-file
+prompt: |
+  The file /data/numbers.txt contains one integer per line.
+  Sort it in ascending order and write the result back to the same file.
+setup_script: scripts/setup_sort.sh   # seeds the file with random numbers
+timeout: 120                          # seconds before the episode is killed
+metadata:
+  difficulty: easy
+  tags: [filesystem, shell]
+```
+
+- What each field does and why it matters.
+- The `setup_script` pattern: how to make the *same* environment produce *different* starting states per task.
+- Design note: the prompt is the agent's *only* source of task context — write it as if you were explaining to a colleague with no other information.
+
+### 7b. Graders
+
+- Why grading replaces human labeling in RL: scalable, deterministic, parallelizable.
+- **Show a broken grader first** — the one that always returns 1.0 because it checks the wrong thing:
+
+```python
+# ❌ Bad: checks if the file exists, not if it's sorted
+def grade(trajectory) -> float:
+    return 1.0 if Path("/data/numbers.txt").exists() else 0.0
+```
+
+- Then the correct version:
+
+```python
+# ✅ Good: actually checks if the content is sorted
+def grade(trajectory) -> float:
+    lines = Path("/data/numbers.txt").read_text().splitlines()
+    numbers = [int(x) for x in lines]
+    return 1.0 if numbers == sorted(numbers) else 0.0
+```
+
+- Three grader archetypes:
+  - **Programmatic assertion** — exact state check (best for deterministic tasks)
+  - **LLM-as-judge** — send the trajectory to an LLM and ask "did the agent succeed?" (best for open-ended tasks)
+  - **Rubric / partial credit** — return a float between 0 and 1, not just binary
+
+```
+[DIAGRAM 6 — Three grader archetypes comparison]
+Purpose: Help readers pick the right grader type for their task.
+Style: Three-column card layout. Each card: grader type name, best for, pros, cons.
+       Simple icons: ✅ for programmatic, 🤖 for LLM, 📊 for rubric.
+Tone: Reference-card style. Scannable at a glance.
+```
+
+---
+
+## 8. Designing Good Tasks *(the craft layer)*
+
+> **TL;DR** — Task design is where most environments silently fail. A good task is specific, unambiguous, and genuinely gradeable.
+
+- Why task design is harder than it looks — the agent can't ask for clarification.
+- **Clarity:** the prompt should have one unambiguous success condition. Test by asking yourself: "Could a human fail this task and still claim they succeeded?"
+- **Difficulty distribution:** a single difficulty level makes for a bad training signal. Aim for a rough spread:
+
+```
+[DIAGRAM 7 — Task difficulty distribution curve]
+Purpose: Show what a healthy training signal looks like vs. a pathological one.
+Style: Two simple bar charts side by side.
+       Left (bad): all tasks at ~same difficulty → flat score distribution.
+       Right (good): bell curve distribution of task scores.
+Tone: Clean data visualization style.
+```
+
+- **Reward hacking** — the enemy of every grader:
+  - Anti-pattern 1: grading on intermediate state instead of final state
+  - Anti-pattern 2: brittle string matching that the agent can game
+  - Anti-pattern 3: grader depends on the agent *reporting* success rather than *achieving* it
+- **Diversity:** tasks should cover the edges, not just the happy path.
+- Quick checklist before shipping a task:
+
+```
+[ ] Prompt is unambiguous — one person reads it, gets one interpretation
+[ ] Setup script is deterministic (seeded)
+[ ] Grader checks final state, not intermediate state
+[ ] Grader can't be gamed by the agent outputting a magic string
+[ ] At least 3 edge cases are covered in the task set
+[ ] Manually ran the task yourself to verify it's solvable
+```
+
+---
+
+## 9. End-to-End Workflow
+
+> **TL;DR** — One episode = environment starts → agent acts → grader scores. Here's the full picture.
+
+```
+[DIAGRAM 8 — End-to-end episode flow (primary diagram of the post)]
+Purpose: The master diagram. Should be the centerpiece illustration.
+Style: Horizontal swimlane diagram. Three swimlanes:
+       - "HUD Platform" (top): task dispatch, score ingestion
+       - "Environment Container" (middle): Docker, toolserver, target service
+       - "Agent" (bottom): LLM, tool calls, observations
+       With numbered steps connecting them (1 → 2 → 3...).
+Tone: Clean, professional. This is the one readers will screenshot and share.
+```
+
+Textual walkthrough alongside the diagram:
+
+1. **Task dispatched** — HUD picks a task from your task set and sends it to the agent with the env connection details.
+2. **Environment starts** — Docker container spins up, `setup_script` runs, services become healthy.
+3. **Agent receives first observation** — a screenshot, a terminal prompt, or whatever your tools return on connect.
+4. **Agent loop** — the agent calls tools. The environment responds. Repeat until the agent calls `done()` or the episode times out.
+5. **Episode ends** — the container state is frozen.
+6. **Grader runs** — your `grade.py` inspects the final state and returns a score in `[0.0, 1.0]`.
+7. **Score + trajectory logged** — available in the HUD dashboard for inspection.
+
+---
+
+## 10. Testing & Debugging Your Environment Locally
+
+> **TL;DR** — Never push an env you haven't broken at least once locally.
+
+- Build and run your container:
+
+```bash
+docker build -t my-env .
+docker run --rm -it my-env
+```
+
+- Exec into a running container to poke around as if you were the agent:
+
+```bash
+docker exec -it <container_id> bash
+```
+
+- Manually fire a tool call to test your MCP server (before involving any agent):
+
+```bash
+curl -X POST http://localhost:8080/tool/bash \
+  -H "Content-Type: application/json" \
+  -d '{"cmd": "ls /data"}'
+```
+
+- Common failure modes and what they mean:
+
+```
+[DIAGRAM 9 — Debugging decision tree]
+Purpose: Give readers a quick flowchart for diagnosing common failures.
+Style: Simple decision tree / flowchart.
+Nodes:
+  "Container won't start?" → Dockerfile issue
+  "Tool call returns 500?" → MCP server misconfiguration
+  "Grader always 0?" → Check if you're reading final state correctly
+  "Episode times out?" → Agent is stuck — check tool response format
+Tone: Practical. Should feel like a cheat sheet pinned to a wall.
+```
+
+| Symptom | Most Likely Cause | First Thing to Check |
+|---|---|---|
+| Container exits immediately | Dockerfile `CMD` fails at start | Run `docker logs <id>` |
+| Tool call returns 500 | MCP server error | Check `server.py` handler for that tool |
+| Grader always returns 0.0 | Grader reading wrong path or wrong state | Add debug `print()` to grader, re-run |
+| Episode always times out | Agent loop is stuck | Check tool response format matches spec |
+| Score is suspiciously 1.0 always | Reward hacking or wrong grader logic | Re-read grader logic, check anti-patterns |
+
+- Using HUD's local dry-run mode to simulate a full episode without spending cloud credits (details TBD).
+
+---
+
+## 11. Reproducibility & Versioning Your Environment
+
+> **TL;DR** — Pin everything. One floating `latest` tag can invalidate months of run data.
+
+- Why determinism is non-negotiable in RL: if the same task behaves differently on different runs, your scores are meaningless.
+- **Pin your dependencies** — always:
+
+```dockerfile
+# ❌ Never do this
+FROM ubuntu:latest
+RUN pip install flask
+
+# ✅ Do this
+FROM ubuntu:22.04
+RUN pip install flask==3.0.1
+```
+
+- **Seeding non-determinism:** if your setup script randomizes anything (file contents, data, port numbers), expose a `--seed` parameter and document it.
+- **Environment versioning:**
+  - Tag your Docker images: `my-env:v1.2.0` not `my-env:latest`
+  - Keep a `CHANGELOG.md` — what changed between versions, and whether it's a breaking change
+  - Breaking change = any change that could alter a score on a previously run task
+- Brief note on how HUD tracks environment version metadata on the platform side.
+
+```
+[DIAGRAM 10 — Version lifecycle]
+Purpose: Show what happens when you change an env version mid-experiment.
+Style: Timeline diagram. Two horizontal timelines: "Env v1" and "Env v2".
+       Run data on v1 cannot be directly compared to run data on v2.
+       Visual break point where the version changes.
+Tone: Cautionary but not scary. Helps cement the "why" of versioning.
+```
+
+---
+
+## 12. Running It on the HUD Platform
+
+> **TL;DR** — Push, run, watch. The platform handles scheduling, parallelism, and storage.
+
+- Push your environment:
+
+```bash
+hud env push my-first-env --tag v1.0.0
+```
+
+- Launch a run:
+
+```bash
+hud run \
+  --env my-first-env:v1.0.0 \
+  --agent <agent-id> \
+  --tasks tasks/ \
+  --parallelism 8        # run 8 episodes simultaneously
+```
+
+- What happens on the platform side (render as a brief diagram):
+
+```
+[DIAGRAM 11 — Platform architecture overview]
+Purpose: Show how HUD orchestrates runs at scale.
+Style: Cloud architecture diagram.
+       Components: Task Queue → Worker Pool → Docker Containers (×N) → Results DB → Dashboard.
+Tone: Infrastructure-style. Should signal "this scales".
+```
+
+- Viewing results in the HUD dashboard: score distributions, trajectory replays, filtering by task difficulty.
+- The iteration loop: push → run → read results → tweak → repeat.
+
+---
+
+## 13. Interpreting Results & Iterating on Your Environment
+
+> **TL;DR** — Score distributions tell a story. Learn to read them before adding more tasks.
+
+- **What the score distribution actually tells you:**
+
+```
+[DIAGRAM 12 — Score distribution patterns and what they mean]
+Purpose: The most actionable diagnostic visual in the post.
+Style: Four small histogram panels, side by side.
+       1. All ~0%:     "Agent can't start — env/tool problem"
+       2. All ~100%:   "Tasks too easy — tighten grader or raise difficulty"
+       3. Bimodal 0/1: "Binary task — agent gets it or it doesn't (interesting!)"
+       4. Smooth curve: "Healthy signal — tasks have appropriate difficulty spread"
+Tone: Data visualization. Clinical but with clear annotations.
+```
+
+- **Inspecting trajectories:** replaying what the agent actually did, step by step.
+  - What to look for: where does the agent give up? What tool call fails silently?
+- **The three common iteration loops:**
+  - *Env bug discovered* → fix Dockerfile/tools → bump version → re-run
+  - *Grader too strict* → widen acceptance criteria → re-run on same version (document the change)
+  - *Task prompt ambiguous* → rewrite prompt → re-run, compare delta
+- When to add more tasks vs. when to fix existing ones:
+  - Rule of thumb: if >40% of your tasks are scoring exactly 0 or exactly 1, fix your env/grader before adding tasks.
+
+---
+
+## 14. What's Next?
+
+- **Scaling up:** running hundreds of tasks in parallel, agent benchmarking, cross-version comparisons.
+- **Advanced grader patterns:** partial credit, multi-step validation, tool-call trajectory grading.
+- **Connecting your own agent:** using HUD's agent API to plug in any LLM or model.
+- **Multi-turn environments:** tasks that require the agent to maintain state across more than one episode.
+- Links to HUD docs, GitHub template repo, Discord community — to be added.
+
+> *"Your environment is ready. In the next post, we'll look at how to train an agent that can actually beat it."*
+
+---
+
+## 15. Appendix
+
+- Full glossary (expanded from Section 3).
+- Annotated example `Dockerfile` with inline comments — full file, not excerpts.
+- Annotated example task YAML — including all optional fields.
+- Annotated example grader — both the bad version and the good version, side by side.
+- Troubleshooting reference table (expanded from Section 10).
+
+```
+[DIAGRAM 13 — Appendix: full architecture map]
+Purpose: One master diagram the reader can refer back to at any point.
+Style: Full-page architecture map. Shows all components (env, tools, tasks, grader,
+       HUD platform, agent) and how they connect. Uses the same visual language
+       as all the earlier section diagrams so it feels like a unified system.
+Tone: Reference poster. Dense but well-organized.
+```
+
+---
+
+## Visual Inventory (Summary for Designer / Reviewer)
+
+| # | Section | Diagram | Type |
+|---|---|---|---|
+| 1 | §1 Introduction | RL loop (agent ↔ env feedback cycle) | Loop diagram |
+| 2 | §2 Theory | Human vs Agent sensors | Side-by-side illustration |
+| 3 | §4 HUD CLI | CLI mental model (you → CLI → cloud) | Layered architecture |
+| 4 | §5 Bootstrap | Annotated project folder structure | Exploded file tree |
+| 5 | §6 Dockerfile | Inside the container cross-section | Blueprint illustration |
+| 6 | §7 Graders | Three grader archetype comparison | 3-column card layout |
+| 7 | §8 Task Design | Difficulty distribution (bad vs good) | Bar chart pair |
+| 8 | §9 E2E Workflow | Episode swimlane (PRIMARY DIAGRAM) | Swimlane / sequence |
+| 9 | §10 Debugging | Debugging decision tree | Flowchart |
+| 10 | §11 Versioning | Version lifecycle timeline | Timeline |
+| 11 | §12 Platform | HUD cloud architecture | Cloud arch diagram |
+| 12 | §13 Results | Score distribution patterns (4 panels) | Histogram panels |
+| 13 | §15 Appendix | Full system architecture map | Reference poster |
+
+---
+
+*End of outline — pending supervisor review before full content is written.*
