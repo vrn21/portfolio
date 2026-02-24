@@ -517,7 +517,44 @@ When you use weighted sub-graders, a low score usually has a clean explanation (
 - If it traded but lost: adjust the task difficulty, the simulator assumptions, or the tool surface (not the grader, unless it’s wrong).
 - If it hit the objective but scored low: the grader is probably checking the wrong thing.
 
-From there, the workflow is repeatable: inspect traces for failures, fix tasks/tools/graders, push, rebuild, rerun. Don’t try to read too much into a single aggregate score—look at failure modes and the grader breakdown first.
+
+
+## Transitioning to Training (Now that the world works)
+
+Once you’ve iterated through tasks, fixed the brittle prompts, and stopped the agent from gaming your grader, you have reached the actual starting line. You now have a verified, deterministic environment that produces ground-truth scores.
+
+Now (and only now) does it make sense to train. At this stage, your focus shifts from "building the world" to "improving the agent's policy within that world".
+
+### If you want to train, freeze the contract first
+Training only makes sense once you stop changing the target every day. Before you launch an RL run, freeze the basics for a versioned snapshot:
+- environment version (image/build)
+- task set (and its parameters)
+- grader behavior (including weights)
+
+
+###  Pick a trainable base model, fork it, and start a training run
+On the HUD platform, training typically starts from a base model, then a fork.
+
+1. **Start with a base model**: Go to **Models** and pick a base model that supports training for your account. You'll notice many options, but sticking to something well-documented to begin with is best.
+   ![Models list](/photos/rl-env-ss/models.png)
+
+2. **Fork it**: You need a model you own (and can version). Fork the base model to create a dedicated checkpoint for this specific RL environment.
+   ![Forking a model](/photos/rl-env-ss/forked%20model.png)
+
+3. **Configure the Training Run**: Click **Train Model**. This is where you connect the pieces: select the environment and the task set you just validated.
+
+You’ll need to configure the run parameters. You don't need to tweak everything immediately: start by setting the **task set**, followed by **number of jobs** (how many episodes to run) and **max tool calls** (to prevent infinite loops)
+
+![Training Job Configuration](/photos/rl-env-ss/training%20jb.png)
+
+Before you launch, the platform will estimate the expected timeline and cost for the run based on your parameters. This is a good sanity check to ensure you haven't accidentally queued up a $500, 3-day experiment!
+
+###  Treat the trained checkpoint like any other change
+After training, don’t just look at “score went up”. Re-run the same eval task set on:
+- the original base model
+- the trained checkpoint/fork
+
+Then inspect traces for differences. The two most common failure modes after training are (1) “it learned to game the grader” and (2) “it got better on the training tasks but worse on nearby cases”. If either is true, you need to fix tasks/graders/distribution before you run more training.
 
 ---
 
