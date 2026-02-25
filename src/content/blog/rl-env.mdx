@@ -1,7 +1,7 @@
 ---
-title: "Build a RL Env end-to-end"
+title: "Build and Train on an RL Env end-to-end"
 publishedAt: "2026-02-23"
-summary: "A practical, no-fluff guide to building RL environments end-to-end: package the world in Docker, define tasks that don’t get gamed, write reliable graders, and run evals. Includes a trading simulator case study from `trading-rl-env/`."
+summary: "A practical, no-fluff guide to building RL environments end-to-end and training models on them. Package the world in Docker, define tasks, run evals, and use the HUD platform to train a specialized agent."
 tags: "Reinforcement Learning, Evaluation, Docker, Python, Agents"
 ---
 
@@ -45,9 +45,11 @@ An RL environment is a contained, resettable setup where a model can run end-to-
 
 Reinforcement learning environments are a practical way to teach a model to perform a specific task that matters to your business especially when you can define success in terms of verifiable outcomes. They let you run the same job repeatedly under controlled conditions and produce the training signal needed to improve reliability.
 
-### How we’ll build one in this guide (TL;DR)
+### What you'll learn in this guide (TL;DR)
 
-We’ll build an environment the same way you’d build any production system: start with a deterministic container, define clean startup/reset behavior, write tasks that specify what success means, and write graders that check the actual final state. We’ll use HUD as the platform layer to run evals and inspect traces, but the design rules apply even if you’re not using HUD.
+This guide is structured into two main phases:
+1. **Building the Environment**: We’ll build an environment the same way you’d build any production system: start with a deterministic container, define clean startup/reset behavior, write tasks to specify goals, and write graders to check the final state.
+2. **Training a Model**: Once the environment is stable and verified, we'll demonstrate how you can fork a base model and train a specialized policy directly on your new RL environment using the HUD platform.
 
 ```text
 +--------------------------------------------------------+
@@ -75,6 +77,7 @@ We’ll build an environment the same way you’d build any production system: s
 - Define tasks that are explicit and testable.
 - Grade from ground truth state.
 - Run evals and use traces to iterate.
+- Fork a base model and train a specialized agent using the HUD platform.
 
 ### What you need before you start
 
