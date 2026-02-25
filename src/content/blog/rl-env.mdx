@@ -548,13 +548,27 @@ You’ll need to configure the run parameters. You don't need to tweak everythin
 ![Training Job Configuration](/photos/rl-env-ss/training%20jb.png)
 
 Before you launch, the platform will estimate the expected timeline and cost for the run based on your parameters. This is a good sanity check to ensure you haven't accidentally queued up a $500, 3-day experiment!
+{/* ![Timeline and Cost Estimate](/photos/rl-env-ss/max%20tool%20calls.png) */}
 
+### Monitor the Training
+Once the training run has actually completed, HUD will provide you with a visual summary of the training process. You will be able to see exactly when the model learned (or failed to learn) the task over the course of the episodes.
+
+![Training Results Overview](/photos/rl-env-ss/ss%20after%20training.png)
+
+You can dive deeper into the metrics by looking at the specific graph outputs. This gives you a much better perspective on the reward trajectory and helps you determine if the agent actually converged on a stable policy or if it was just flailing randomly.
+
+![Model Training Graph](/photos/rl-env-ss/model%20graph.png)
 ###  Treat the trained checkpoint like any other change
 After training, don’t just look at “score went up”. Re-run the same eval task set on:
 - the original base model
 - the trained checkpoint/fork
 
 Then inspect traces for differences. The two most common failure modes after training are (1) “it learned to game the grader” and (2) “it got better on the training tasks but worse on nearby cases”. If either is true, you need to fix tasks/graders/distribution before you run more training.
+
+### How to use your new model
+If the evaluation runs show genuine improvement without degrading on edge cases, you now have a specialized model. HUD gives you immediate API access to it. You can call this model exactly like you would any standard foundation model, but now it natively understands your environment's tools and constraints.
+
+![How to Use Model](/photos/rl-env-ss/how%20to%20use.png)
 
 ---
 
