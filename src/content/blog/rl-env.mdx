@@ -1,596 +1,282 @@
 ---
-title: "Build and Train on an RL Env end-to-end"
-publishedAt: "2026-02-23"
-summary: "A practical, no-fluff guide to building RL environments end-to-end and training models on them. Package the world in Docker, define tasks, run evals, and use the HUD platform to train a specialized agent."
-tags: "Reinforcement Learning, Evaluation, Docker, Python, Agents"
+title: "Train & Use Better Agents with Reinforcement Learning"
+publishedAt: "2026-02-28"
+summary: "Reinforcement learning is a post-training method for making models reliably execute a verifiable workflow: build a resettable environment, grade from ground truth, iterate with evals + traces, then (optionally) train and validate."
+tags: "Reinforcement Learning, Post-Training, Agents, Evaluation, Environments"
 ---
 
+I took an open-source 120B model that scored 37.2% on a custom trading task set and ran RL post-training against a verifiable environment built on [HUD](https://hud.ai). Average score rose to 47.7%. Best-of-10 jumped from 55.2% to 75.5%. Same model, no new data, no prompt changes—just a few training runs against an environment that defines what "good" looks like.
 
-## Introduction
+![Model before and after RL](public/photos/rl-env-ss/model_rl.png)
 
-Four quick answers, then we get to implementation.
+The gap these numbers close isn’t knowledge—it’s **execution**. Many models can describe the right workflow, then fail when asked to run it against real state: one tool call, no follow‑up checks, no completion. (In the trading environment here: place a buy, never poll fills, stop.) If you’re building agents, this is the difference between a plausible transcript and a system you can run unattended.
 
-### What is reinforcement learning (RL)?
+If you compare traces for the RL’d vs non‑RL’d model on the same eval set ([leaderboard](https://www.hud.ai/evalsets/82f53278-9c7b-4241-88f5-7bf2e7c0816e?tab=leaderboard)), the difference is mostly “uses the tools correctly and follows through” rather than any new kind of intelligence.
 
-RL is a family of training methods where a model improves by repeatedly attempting a task and being updated using a scalar feedback signal (a reward). In modern agent settings, the practical version is: run the model in a controlled setup, score what it produced using automated checks, and use those scores to push probability mass toward behaviors that reliably succeed.
+RL training targets that reliability gap by optimizing for **outcome**, not eloquence. You run the model inside a resettable environment, score each episode from ground‑truth state, and update the policy to increase the probability of trajectories that earn that score. When “done” is verifiable, this is a direct way to move a workflow from “works sometimes” to “works most runs” without curating new supervised data.
 
-```text
-           +-----------------+
-           |                 |
-  +------> |   Environment   | --------+
-  |        |                 |         |
-  |        +-----------------+         |
-  |                                    |
-  | Action                       State |
-  |                             Reward |
-  |                                    |
-  |        +-----------------+         |
-  |        |                 |         |
-  +------- |      Agent      | <-------+
-           |                 |
-           +-----------------+
-```
+If you can build that environment for your own workflow, you can train against your own task set and push a base model toward higher success rate (and usually less wasted work) on the specific job you care about.
 
-### What is a reinforcement learning environment?
+**The catch: RL is brutally literal.** It optimizes exactly what you specify. The core challenge isn't the optimizer—it's the **environment contract**: how you reset state, define tasks, write graders, and record traces. Environment quality is your ceiling.
 
-An RL environment is a contained, resettable setup where a model can run end-to-end on a task with minimal human intervention, using only the tools, services, and materials you provide.
-
-<a href="https://spinningup.openai.com/en/latest/spinningup/rl_intro.html#id4">OpenAI</a> defines Rl Envs as follows:
-
-> The main characters of RL are the agent and the environment. The environment is the world that the agent lives in and interacts with. At every step of interaction, the agent sees an observation of the state of the world, and then decides on an action to take. The environment changes when the agent acts on it, but may also change on its own.
->
-> The agent also perceives a reward signal from the environment, a number that tells it how good or bad the current world state is. The goal of the agent is to maximize its cumulative reward, called return. Reinforcement learning methods are ways that the agent can learn behaviors to achieve its goal.
-
-### Why do you need an RL environment?
-
-Reinforcement learning environments are a practical way to teach a model to perform a specific task that matters to your business especially when you can define success in terms of verifiable outcomes. They let you run the same job repeatedly under controlled conditions and produce the training signal needed to improve reliability.
-
-### What you'll learn in this guide (TL;DR)
-
-This guide is structured into two main phases:
-1. **Building the Environment**: We’ll build an environment the same way you’d build any production system: start with a deterministic container, define clean startup/reset behavior, write tasks to specify goals, and write graders to check the final state.
-2. **Training a Model**: Once the environment is stable and verified, we'll demonstrate how you can fork a base model and train a specialized policy directly on your new RL environment using the HUD platform.
-
-```text
-+--------------------------------------------------------+
-|  Docker Container (The World)                          |
-|                                                        |
-|   +---------------+            +------------------+    |
-|   |   Task Set    | -------->  |      Agent       |    |
-|   | (Assignments) |            | (Model actions)  |    |
-|   +---------------+            +------------------+    |
-|                                         |              |
-|                                         v              |
-|                                +------------------+    |
-|                                |      Grader      |    |
-|                                | (Checks outcome) |    |
-|                                +------------------+    |
-|                                         |              |
-+-----------------------------------------|--------------+
-                                          |
-                                          v
-                                   [ Final Score ]
-                                 (Exported to HUD)
-```
-
-- Package the world in Docker.
-- Define tasks that are explicit and testable.
-- Grade from ground truth state.
-- Run evals and use traces to iterate.
-- Fork a base model and train a specialized agent using the HUD platform.
-
-### What you need before you start
-
-- Comfort reading Python and Dockerfiles.
-- Docker installed locally.
-- A HUD account + API key (when you get to the deployment/evals section).
+**TL;DR**
+- RL training pushed a 120B model from 37.2% to 47.7% average on a trading task set—Best@10 from 55.2% to 75.5%—in a few training runs.
+- The trading domain is incidental. The same loop works for any task where success is verifiable and the environment is resettable.
+- This blog walks through the full loop: environment design, graders, traces, and training—with a concrete case study in [`trading-rl-env/`](https://github.com/vrn21/trading-rl-env/tree/main/).
 
 ---
 
-# Where RL environments fit (in practice)
+## The environment contract
 
-Most teams don’t need RL “in general”; they need a model to execute a specific workflow that matters to their business (support triage, an internal ops runbook, a QA flow, a trading-style decision loop) with higher reliability than prompt engineering alone provides. An RL environment is the mechanism that makes that improvement tractable: it packages the workflow into a repeatable, resettable system, constrains what the model can do via tools and interfaces, and produces a verifiable score from ground truth so you can run the same job many times and iterate. The rest of this post is the builder view—what the environment is made of, and how to implement each piece without creating a grading or reset mess.
+Reinforcement learning is a feedback loop: an **agent** takes an **action**, the **environment** returns an **observation**, and a **reward function** assigns a scalar score. Training updates the policy to maximize expected reward over many episodes.
 
-Typical examples look like this. For a **coding agent on your repo**, the environment is a container that includes your codebase plus the developer tooling the agent needs (build system, tests, linters, package managers, and any required services); the tasks are concrete bug fixes or feature changes; grading comes from the checks you already trust (tests passing, lint/static checks, targeted assertions); the outcome is an agent that’s more reliable _on your codebase_, not “coding in general”. For a **computer-use agent on internal software**, the environment might be a browser-driven setup with the app running (frontend + backend + any required dependencies); the tasks could be end-to-end UI workflows; grading comes from ground-truth state (records created, status transitions, audit logs); the outcome is higher completion rate on those workflows without hand-holding. For an **ops/runbook agent**, the environment might be a controlled slice of the operational surface (services, CLIs, dashboards, and safe staging/prod interfaces); the tasks could be specific procedures (triage, mitigation, verification); grading comes from objective health signals and expected state transitions; the outcome is fewer failed runs and less variance on repeated operational procedures.
+In agentic LLM systems, those terms map directly onto what you build:
+
+| RL concept | What you build | Example |
+|---|---|---|
+| **World** | Runnable system that holds state | Docker image with a market simulator |
+| **Episode reset** | Clean start, dependencies ready | `portfolio.reset(initial_cash=15_000)` |
+| **Task** | What "done" means + constraints | "Make ≥$200 net profit trading AMZ" |
+| **Actions / Observations** | Agent tools + their outputs | `place_order()`, `poll_fills()`, `market_data_snapshot()` |
+| **Reward** | Ground-truth grader | PnL from portfolio state, not from the agent's explanation |
+| **Traces** | Recorded action/observation sequence | Tool calls + outputs + grader breakdown |
+
+```text
+episode start
+  |
+  v
+[reset] → [task spec] → (actions ↔ observations) → [grader] → reward ∈ [0,1]
+                              |
+                              v
+                           traces
+```
+
+If reset is leaky, tasks are underspecified, tools are awkward, or graders are gameable, RL will faithfully optimize the leak or the loophole. **Environment quality is your ceiling.**
 
 ---
 
-# The core components of an RL environment
+## The infrastructure you'd rather not build
 
-Before diving into the specifics of each piece, here is how the core components interact during a single evaluation run:
+The environment contract is the hard part. The rest is harness plumbing: build and version the container, run many isolated episodes, capture traces + grader breakdowns, compare harness changes with evals, and manage checkpoints once you start training.
 
-```text
-  [1] Setup (Init)                   [2] Task (Prompt/Constraints)
-         |                                         |
-         v                                         v
- +------------------+                      +------------------+
- |   Environment    | <--- Interacts --->  |      Agent       |
- |  (Tools/State)   |                      |                  |
- +------------------+                      +------------------+
-         |
-         v
-  [3] Final State
-         |
-         v
- +------------------+                      +------------------+
- |      Grader      | ---- Evaluates --->  |   Final Score    |
- | (Ground Truth)   |                      |   (Reward)       |
- +------------------+                      +------------------+
-```
-
-## The environment: the world, packaged
-
-The environment is the deterministic, resettable system the agent is allowed to interact with. In this blog, that system is packaged as a Docker image: it contains whatever the agent needs to do the work (services, simulator/app, data, and the environment server), and it must be easy to spin up, run, and tear down without “it worked on my machine” surprises.
-
-Examples:
-
-- **Coding agent**: the environment is a container with your repo mounted or copied in, plus the toolchain the agent needs (build tools, tests, linters, language runtime, and any required local services).
-- **Computer-use agent**: the environment is a container that runs your app stack (frontend + backend + dependencies) and exposes a browser/computer interface so the agent can operate the UI end-to-end.
-- **Ops/runbook agent**: the environment is a controlled slice of the operational surface (services, CLIs, dashboards, fixtures) where actions are safe and outcomes are measurable.
-
-## The setup: how an episode starts
-
-Setup is everything that happens after the container starts but before the agent is asked to do work: start dependencies, wait for readiness, and establish a clean initial state for the run. This is also where you define the episode contract (reset behavior, termination/timeout rules, and what gets cleaned between runs) so each run is comparable and grading remains meaningful.
-
-Examples:
-
-- **Coding agent**: setup checks the repo is present, installs dependencies if needed, and resets the workspace (clean git state, clean build artifacts, known fixtures).
-- **Computer-use agent**: setup boots the app stack, waits for health, and ensures the UI opens in a known state (fresh user/session, seeded data, consistent starting page).
-- **Ops/runbook agent**: setup brings up the services in a controlled state (fixtures, safe configuration) and verifies observability is available for grading (health endpoints, logs/metrics access).
-
-## Tasks: what you ask the agent to do
-
-Tasks are the unit of work: they tell the agent what to accomplish, what constraints apply, and what evidence will be used to judge success. Keep tasks concrete and verifiable; avoid “explain what you did” as a success condition, and prefer requirements that map directly to world state you can check.
-
-Examples:
-
-- **Coding agent**: “Fix the failing test and keep the linter clean.” Evidence: `pytest`/`go test`/`cargo test` passes and the diff matches constraints.
-- **Computer-use agent**: “Complete this workflow in the app and leave the system in state X.” Evidence: the backend shows the expected record/status and the UI reflects it.
-- **Ops/runbook agent**: “Apply mitigation Y and confirm Z is healthy.” Evidence: health checks, SLO signals, and expected state transitions are satisfied.
-
-## Graders: how you turn outcomes into a score
-
-Graders turn the final outcome (and sometimes key intermediate facts) into a score. The only reliable rule here is to grade from ground truth—tests, database state, simulator state, audit logs—not from what the agent claims. If the grader is vague or gameable, the model will optimize the loophole instead of the task.
-
-Examples:
-
-- **Coding agent**: score is based on deterministic checks (tests passing, required files changed, forbidden files untouched, performance budget met).
-- **Computer-use agent**: score is based on system state (records created, correct status transitions, no invalid side effects), optionally with a screenshot check as a secondary signal.
-- **Trading/ops-style environments**: score is based on simulator/service truth (PnL, risk limits, executions; or health metrics and expected transitions), with penalties for no-op behavior when action is required.
+In this post we use [HUD](https://hud.ai) for that plumbing (SDK + build/deploy + eval + traces + training), so the focus stays on environment design and the trace‑driven improvement loop—not orchestration code.
 
 ---
 
-# Reusing the infrastructure
+## Case study: a trading RL environment
 
-If you build more than one RL environment, you’ll notice the repetition. The domain logic changes, but the plumbing stays the same: build and run containers, manage secrets, run tasksets, store results, inspect traces, compare versions, and keep the whole thing reproducible. Most teams end up rebuilding this layer ad hoc—until it becomes the bottleneck.
+The case study environment lives in [`trading-rl-env/`](https://github.com/vrn21/trading-rl-env/tree/main/) and runs a market simulator ([QuantReplay](https://github.com/Quod-Financial/quantreplay)) inside a single Docker container. The HUD environment server wraps the simulator's venue API into a small, typed tool surface and exposes [trading tasks](https://github.com/vrn21/trading-rl-env/blob/main/tasks/) as `@env.scenario(...)` episodes—from `take-profit-basic` to constraint-heavy scenarios like `maker-discipline` and `underwater-unwind`.
 
-One way to avoid that is to use a platform + SDK that standardizes the lifecycle. HUD is one option. It doesn’t replace environment design (you still own your world, tasks, setup, and graders), but it can remove a lot of the operational glue so iteration is less painful.
+Tasks and graders (sources: [`tasks/basic_tasks.py`](https://github.com/vrn21/trading-rl-env/blob/main/tasks/basic_tasks.py), [`tasks/quant_tasks.py`](https://github.com/vrn21/trading-rl-env/blob/main/tasks/quant_tasks.py)):
 
-## We could use HUD
+| Scenario | Description |
+|---|---|
+| `take-profit-basic` | Generate target profit on a single symbol with active trading. |
+| `maker-discipline` | Achieve steady profits with disciplined inventory control, limited drawdown, and consistent profitable round trips. |
+| `underwater-unwind` | Recover a pre-existing losing position to profit while tightly managing risk and finishing flat. |
+| `balanced-cross-symbol` | Generate diversified profits across multiple symbols with balanced per-symbol performance and controlled risk. |
+| `small-capital-precision` | Produce consistent profits with limited capital under strict risk and inventory constraints. |
+| `quant-gauntlet-hard` | Deliver high, diversified, risk-controlled performance across multiple symbols under strict execution discipline. |
 
-HUD is an SDK + platform with starter templates (blank/coding/browser/etc.) that include the repetitive infrastructure plumbing (container build/deploy, task execution, run management, trace capture) so you can spend your effort on the parts that actually determine success—tasks, setup/reset, and graders—and then run the same environment against many tasks and models on the platform; it won’t rescue vague specs or weak grading, but it does make iteration and measurement less painful.
+### The task boundary: what the agent sees vs what the grader sees
 
----
-
-# Example Case study: a trading RL env
-
-Up to now, we’ve talked about RL environments in terms of components. The case study is where those abstractions become concrete: we’ll take a real environment from this repo and walk through how it’s packaged, how runs are defined, and how outcomes are graded.
-
-## The trading setup (what’s simulated, what isn’t)
-
-The setup is straightforward: we have a model that’s fine in conversation, but it’s unreliable once it has to run a trading loop end-to-end (place/cancel orders, handle fills, stay within limits). At that point, my next step is not more prompting—it’s to wrap the workflow in an RL environment so we can run it repeatedly and score outcomes from simulator truth.
-
-We can try structuring this workflow as an RL environment to see if it helps.
-
-This environment is intentionally scoped: it runs a deterministic market simulator plus a portfolio inside a container, exposes a small set of trading tools, and defines tasks like “reach a target profit under constraints”; grading comes from simulator truth (executions/positions/PnL), not the agent’s explanation. It’s built to demonstrate environment design, not to claim RL will produce a profitable strategy.
-
-## File tree tour (so you know where to look)
-
-My first move is not to invent structure from scratch. I start from a template and modify it. For a trading environment, the blank template is the right starting point because it makes the fewest assumptions.
-
-There are two common ways to get a template onto your machine.
-
-Option A — clone a template repo (copy-pasteable):
-
-- Blank: [hud-evals/hud-blank](https://github.com/hud-evals/hud-blank)
-- Browser: [hud-evals/hud-browser](https://github.com/hud-evals/hud-browser)
-- Coding: [hud-evals/coding-template](https://github.com/hud-evals/coding-template)
-
-```bash
-# Blank (recommended starting point for this trading case study)
-git clone https://github.com/hud-evals/hud-blank
-cd hud-blank
-```
-
-Option B — create from a template in the HUD platform:
-
-![Importing an environment](/photos/rl-env-ss/import%20env.png)
-
-Before we touch trading logic, it’s worth internalizing what the blank template actually contains. In this repo, the local copy is under `hud-blank/` and looks like:
-
-```
-hud-blank/
-├── Dockerfile.hud        # Container that boots the world + starts the env server
-├── pyproject.toml        # Python deps (env server + any helpers)
-├── env.py                # Registers tools + scenarios; defines init/shutdown hooks
-├── backend/app.py        # Example “world state” service (FastAPI counter backend)
-├── local_test.py         # Local smoke test loop
-├── remote_test.py        # Example: run tasks via HUD APIs
-├── remote_tasks.json     # Concrete task instances for remote eval runs
-└── README.md             # Quickstart + how the pieces fit
-```
-
-That skeleton is the point: Dockerfile defines the world, [`env.py`](https://github.com/vrn21/trading-rl-env/blob/main/env.py) defines the agent-facing contract, tasks define the work, and graders (in more complex envs) turn world state into a score. Next, we’ll swap the toy backend for a trading simulator and add the domain-specific tools and grading.
-
-## Step-by-step: building the trading environment
-
-This is the point where the “environment = Docker” idea stops being abstract.
-
-### Start from the blank Dockerfile (and keep the last line sacred)
-
-The blank template’s [`Dockerfile.hud`](https://github.com/vrn21/trading-rl-env/blob/main/Dockerfile.hud) is intentionally boring: install a couple system deps, install Python deps, copy in `env.py` and a toy backend, then start the backend and finally start the HUD environment server over stdio.
-
-The only non-negotiable rule: **whatever else you do, the process you end with must be the HUD environment server** (in these templates that’s `hud dev env:env --stdio`). If you don’t end in that process, the platform can’t talk to your environment.
-
-In the blank template, the last line looks like this:
-
-```dockerfile
-CMD ["sh", "-c", "uvicorn backend.app:app --host 0.0.0.0 --port $BACKEND_PORT --log-level warning >&2 & sleep 0.5 && hud dev env:env --stdio"]
-```
-
-You can change what runs before it. You generally shouldn’t change what runs last.
-
-### Picking the simulator (why QuantReplay)
-
-In this case I wasn’t trying to “invent a market” from scratch. I needed an open-source simulator that behaves like a real exchange enough to exercise order placement, cancels, and fills. After digging through options, I landed on QuantReplay because it provides a self-contained matching engine with interfaces you can actually wire tools to: a REST API on `localhost:9050` and a FIX gateway on `localhost:9051`, backed by PostgreSQL.
-
-That choice has an immediate consequence for the environment: the container has to boot two services (PostgreSQL + the QuantReplay market simulator) and keep them healthy before the agent is allowed to start.
-
-It also keeps the environment self-contained: for RL training and evaluation, you generally want to minimize reliance on the public internet, so a local simulator is a better fit than wiring an agent directly to external market data or live venues.
-
-```text
-+-----------------------------------------------------+
-| docker container (trading-rl-env)                   |
-|                                                     |
-|  +----------------+        +---------------------+  |
-|  |                |        |                     |  |
-|  |  PostgreSQL    | <----  |  QuantReplay        |  |
-|  |  (State DB)    |        |  (Market Simulator) |  |
-|  |                |        |                     |  |
-|  +----------------+        +---------------------+  |
-|                               ^               ^     |
-|                               | REST/FIX      |     |
-|                               v               |     |
-|  +---------------------------------------+    |     |
-|  | HUD Environment Server                |    |     |
-|  | (Exposes tools to agent via MCP stdio)| <--+     |
-|  +---------------------------------------+          |
-+-----------------------------------------------------+
-```
-
-### Define the agent↔market interface (tools via the MCP server)
-
-Once the simulator exists, the next question is “what does the agent actually get to do?”. In HUD environments, the environment server (the MCP server started by `hud dev env:env --stdio`) is where you define that interface as tools—small, typed functions that wrap whatever is running inside the container.
-
-In this trading environment, the tools are intentionally minimal and map directly to simulator/portfolio operations:
-
-- `list_symbols()` — what can I trade?
-- `get_last_price(symbol)` — what price did _I_ last trade at? (QuantReplay doesn’t expose a live order book in this setup, so price discovery comes from fills.)
-- `place_order(symbol, side, qty, price)` — submit a limit order.
-- `cancel_order(order_id, symbol, side)` — cancel a resting order.
-- `poll_fills()` — ingest executions since the last call and update portfolio state.
-- `get_portfolio()` — cash, positions, PnL, fill count.
-
-These are “custom tools” in the only way that matters: they’re a thin, explicit API for your domain. For a different business workflow, you’d define different tools, but the pattern stays the same—wrap the real operations behind a stable interface so tasks and graders can rely on it.
-
-### When you need multiple services, move startup into `run.sh`
-
-This environment needs multiple processes (PostgreSQL, QuantReplay, then the HUD env server), so startup is pushed into a small [`run.sh`](https://github.com/vrn21/trading-rl-env/blob/main/run.sh) that boots dependencies, waits for readiness, and then `exec`s into `hud dev env:env --stdio`. It’s simpler to read, easier to debug, and less fragile than a single jammed `CMD`.
-
-### Sanity-check the world before the agent touches it
-
-Before I involve the MCP server or any model runs, I run the container as a plain system and verify the world is actually alive: the services are up, health checks pass, and the simulator APIs are reachable on the expected ports. If this layer is flaky, the rest of the environment will be noise.
-
-### Wire the environment server (`env.py`)
-
-[`env.py`](https://github.com/vrn21/trading-rl-env/blob/main/env.py) is the environment server entry point: it’s where you create `env = Environment(...)`, register tools and scenarios, and define lifecycle hooks. When you run `hud dev env:env --stdio`, HUD imports the [`env.py`](https://github.com/vrn21/trading-rl-env/blob/main/env.py) module and uses the `env` object as the server it will talk to over stdio.
-
-Two decorators are the “setup glue” around agent runs:
-
-- `@env.initialize`: runs after the container is up but **before any task is handed to the agent**. Use it for readiness checks and wiring clients; fail fast if dependencies aren’t reachable.
-- `@env.shutdown`: runs when the environment server is shutting down. Use it for best-effort cleanup (disconnect/close clients). Don’t put critical logic here; shutdown won’t run in every failure mode.
-
-In this trading environment, the hooks are intentionally boring: check that the simulator is reachable, connect the client, and cleanly disconnect on shutdown. The shape looks like this:
-
-```python
-env = Environment("trading")
-_client = QuantReplayClient()
-
-@env.initialize
-async def initialize() -> None:
-    # Runs before the agent sees any task prompt.
-    if not await _client.health_check():  # e.g. hits the REST API on localhost:9050
-        raise RuntimeError("QuantReplay not reachable. Is it running?")
-    _client.connect()  # e.g. open FIX session / sockets
-
-@env.shutdown
-async def shutdown() -> None:
-    # Best-effort cleanup when the server is stopping.
-    _client.disconnect()
-    await _client.close()
-```
-
-### Define the task as a scenario (and keep prompts explicit)
-
-In HUD, a task starts life as a scenario function decorated with `@env.scenario("id")`. The “peculiar” part is the control flow: the scenario yields a prompt to the agent, then later yields a score. That structure forces you to separate _what you ask_ (prompt) from _how you judge_ (grading).
-
-```text
-  HUD Platform                   Scenario Generator (env.py)
-       |                                      |
-       |--- 1) Start Scenario --------------->|   [ Setup World / Reset ]
-       |                                      |
-       |<-- 2) yield Prompt ------------------|
-       |                                      |
-  [Agent acts via tools]                      |
-       |                                      |
-       |--- 3) Agent finishes --------------->|   [ Compute Grade ]
-       |                                      |
-       |<-- 4) yield Score -------------------|
-```
-
-For anything beyond a toy demo, I keep scenarios in a separate `tasks/` module for the same reason you separate routes/controllers in a web app: it scales. In this trading environment the scenario lives in [`trading-rl-env/tasks/take_profit.py`](https://github.com/vrn21/trading-rl-env/blob/main/tasks/take_profit.py) and takes parameters that define the run (symbol, starting cash, profit target).
-
-At a high level, the pattern looks like this:
+The `take-profit-basic` scenario (source: [`tasks/basic_tasks.py`](https://github.com/vrn21/trading-rl-env/blob/main/tasks/basic_tasks.py)) is the episode boundary: reset to a known baseline, yield a spec the agent sees, then yield a scalar reward the agent never sees.
 
 ```python
 @env.scenario("take-profit-basic")
-async def take_profit_basic(symbol: str = "AMZ", initial_cash: float = 15_000, target_profit: float = 200):
-    portfolio.reset(initial_cash=initial_cash)   # setup/reset for this run
+async def take_profit_basic(symbol="AMZ", initial_cash=15_000.0, target_profit=200.0):
+    portfolio.reset(initial_cash=initial_cash)
 
-    _ = yield f"""...task prompt with tools, constraints, and scoring..."""
+    _ = yield f"""You are a trader on XETRA. Starting cash: ${initial_cash:,.0f}.
+Goal: make at least ${target_profit:,.0f} net profit trading {symbol}.
+Your score is based on your portfolio state (not explanations)."""
 
-    grade = Grade.from_subscores([...])          # grade from portfolio/simulator truth
-    yield grade.score
+    grade = Grade.from_subscores([
+        PnLGrader.grade(weight=0.80, portfolio=portfolio,              # ← ground truth
+                        initial_cash=initial_cash, target_profit=target_profit),
+        TradeActivityGrader.grade(weight=0.20, portfolio=portfolio),   # ← shaping signal
+    ])
+    yield grade.score                                                  # ← optimizer sees this
 ```
 
-The prompt is the most important part of the task definition. If you leave any of it unambiguously defined, you’ll get inconsistent behavior and you’ll spend your time debugging “interpretation” instead of improving the environment.
+Because the scenario is a generator, **grading doesn't run until the agent is done**. The agent can't see how it's being scored, which reduces the incentive to game the grading mechanism instead of the task.
 
-### Write graders (one approach I use: weighted sub-graders)
+### Why the activity grader exists
 
-HUD doesn’t force one grading style. The blank template keeps it inline: compute a score in the scenario and `yield` it. That’s fine when the grading rule is trivial.
+Without a shaping signal, "did nothing" and "tried and failed" both score 0.0—the optimizer can't distinguish them, and early training collapses into indistinguishable zero-reward episodes. The 80/20 weighting means the shaping signal is strong enough to differentiate early episodes but never dominates the primary objective.
 
-Example (inline grading, blank-template style):
+Important lines from the graders (scoring logic only, from [`grading/graders.py`](https://github.com/vrn21/trading-rl-env/blob/main/grading/graders.py)):
+
+```python
+#https://github.com/vrn21/trading-rl-env/blob/main/grading/graders.py
+pnl = _clamp(float(portfolio.net_profit()) / target_profit) if target_profit > 0 else 0.0
+
+fills = portfolio.fills
+buys = any(str(f.get("side", "")).upper() == "BUY" for f in fills)
+sells = any(str(f.get("side", "")).upper() == "SELL" for f in fills)
+activity = 1.0 if (buys and sells) else (0.5 if fills else 0.0)
+
+reward = 0.80 * pnl + 0.20 * activity
+```
+
+### Narrow tools prevent reward hacking
+
+The action surface is deliberately small and typed—no shell, no DB access, no simulator internals: [`tools/`](https://github.com/vrn21/trading-rl-env/blob/main/tools/)
+
+| Category | Tools |
+|---|---|
+| Market observation | `list_symbols`, `market_data_snapshot`, `get_last_price`, `get_listing_rules` |
+| Order management | `place_order`, `replace_order`, `cancel_order`, `poll_fills` |
+| State inspection | `get_portfolio` |
+
+Keeping "reward-hacking by side-channel" out of the action space means the agent can only improve its score by actually trading better.
+
+### Boot sequence: keep stdout clean for JSON-RPC
+
+The [container](https://github.com/vrn21/trading-rl-env/blob/main/Dockerfile.hud) runs Postgres, QuantReplay, and the HUD MCP server in a single process tree. In [`run.sh`](https://github.com/vrn21/trading-rl-env/blob/main/run.sh), the critical trick is **fd redirection**—every service's output goes to stderr so stdout stays clean for the JSON-RPC protocol:
+
+```bash
+exec 3>&1          # save stdout to fd 3
+exec 1>&2          # redirect all output to stderr
+
+# ... start Postgres, wait for ready ...
+# ... start QuantReplay server, wait for ready ...
+
+exec 1>&3          # restore stdout for MCP server
+exec 3>&-
+exec hud dev env:env --stdio
+```
+
+Without this, any stray log line from Postgres or QuantReplay corrupts the MCP stream and the agent sees garbage observations.
+
+
+---
+
+## Build your own environment (the shortest path)
+
+The simplest useful environment has three things: a tool, a task that defines "done", and a ground-truth score. Minimal example: [`hud-blank/env.py`](https://github.com/hud-evals/hud-blank/blob/main/env.py). Also there are other templates like: [`coding-template`](https://github.com/hud-evals/coding-template), [`hud-browser`](https://github.com/hud-evals/hud-browser)
+
+**① Tool** — the action surface:
+
+```python
+@env.tool()
+async def act() -> str:
+    resp = await http_client.post("/act")              # ← mutate world state
+    return f"Counter: {resp.json().get('count', 0)}"   # ← observation back to agent
+```
+
+**② Scenario** — the task boundary (prompt now, grade later):
 
 ```python
 @env.scenario("count-to")
 async def count_to(target: int = 10):
-    await http_client.post("/reset")
-    _ = yield f"Call act() until the counter reaches {target}."
+    await http_client.post("/reset")                                  # ← clean episode start
+    _ = yield f"Call act() until the counter reaches {target}."       # ← agent sees this
     current = (await http_client.get("/state")).json().get("count", 0)
-    yield min(1.0, current / target) if target > 0 else 1.0
+    yield min(1.0, current / target) if target > 0 else 1.0          # ← optimizer sees this
 ```
 
-In this trading environment, I used a pattern I reuse a lot: define a couple of small graders that each measure one thing, then combine them with weights into a single score. It’s not the only way to grade, but it makes the logic easier to swap, reuse, and debug when you inevitably have to change it.
-
-The mechanics are simple: each sub-grader returns a `SubGrade` (name, score, weight, metadata). A `Grade` object combines them and enforces “weights sum to 1.0”
+**③ Initialize** — a fail-fast readiness gate:
 
 ```python
-grade = Grade.from_subscores([
-    PnLGrader.grade(weight=0.8, portfolio=portfolio, initial_cash=initial_cash, target_profit=target_profit),
-    TradeActivityGrader.grade(weight=0.2, portfolio=portfolio),
-])
-yield grade.score
+@env.initialize
+async def init() -> None:
+    (await http_client.get("/health")).raise_for_status()
 ```
 
-Here are the two concrete sub-graders used in this case study (shortened for readability):
-
-```python
-class PnLGrader(Grader):
-    name = "PnLGrader"
-
-    @classmethod
-    def compute_score(cls, portfolio, initial_cash: float, target_profit: float, **_) -> tuple[float, dict]:
-        profit = portfolio.net_profit()
-        score = max(0.0, min(1.0, profit / target_profit)) if target_profit > 0 else 0.0
-        return score, {"actual_profit": round(profit, 2), "target_profit": target_profit}
-```
-
-```python
-class TradeActivityGrader(Grader):
-    name = "TradeActivityGrader"
-
-    @classmethod
-    def compute_score(cls, portfolio, **_) -> tuple[float, dict]:
-        fills = portfolio.fills
-        buys = sum(1 for f in fills if f["side"] == "BUY")
-        sells = sum(1 for f in fills if f["side"] == "SELL")
-        score = 1.0 if (buys > 0 and sells > 0) else (0.5 if fills else 0.0)
-        return score, {"total_fills": len(fills), "buy_fills": buys, "sell_fills": sells}
-```
-
-This isn’t a claim that “two graders is the right answer” or that these are perfect rewards. The point is the workflow: keep grading grounded in state the environment owns, split it into verifiable signals when that helps, and make the score composition explicit so you can change it without rewriting the entire scenario.
-
-### Build the container with `hud build`
-
-Once the world, tools, tasks, and graders exist, build the image once before you try to run anything remotely.
-
-Prereqs:
-
-- HUD CLI installed
-- Docker installed and running
-
-From the environment directory:
+Verify end-to-end (from `hud-blank/`):
 
 ```bash
-cd trading-rl-env
 hud build .
+uvicorn backend.app:app --port 8005
+python local_test.py
 ```
-
-If the environment is valid, the build ends with a summary like:
 
 ```text
-✅ Created lock file: hud.lock.yaml
-Build Complete
-✓ Built image: trading-rl-env:0.1.x
-✓ Also tagged: trading-rl-env:latest
-✓ Tools found: 6
+=== Test 1: Standalone Tools ===
+Tools: ['act']
+Counter: 1
+Counter: 2
+Counter: 3
 ```
 
 ---
 
-# Deploy to HUD and run evals
+## Deploy, eval, trace, train
 
-## Build and deploy
+### Build and deploy
 
-At this point you have a working local image. That’s not “deployed” in any useful sense: nobody else can run it, and you can’t scale evaluation runs off your laptop. The boring next step is to put the environment in a repo and let the platform build it from source.
-
-There are two standard ways to get the environment onto the platform:
-
-1. Push your code to a repo host (e.g., GitHub) and import it in HUD
-
-- In the HUD dashboard: **New Environment → Import from GitHub**
-- Select the repo + branch, and let HUD build it on push
-
-![Importing an environment](/photos/rl-env-ss/import%20env.png)
-
-2. Deploy via CLI (when you want a CLI-first pipeline)
+From an environment directory (example: [`trading-rl-env/`](https://github.com/vrn21/trading-rl-env/tree/main/)):
 
 ```bash
-cd trading-rl-env
-hud deploy .
+hud build .     # local smoke test
+hud deploy .    # remote build + versioning
 ```
 
-## Run evaluations across models and interpret results
+Or connect a GitHub repo in the HUD dashboard—each push triggers a build and produces a versioned environment artifact.
 
-Start with a single task. If that fails, don’t scale anything.
+### Traces as your debugger
 
-On the HUD platform UI, the flow is the same every time. The only thing that changes is what you learn from the traces. We can visualize this entire flow with our trading environment.
+Start with a small task-set run and inspect traces in the UI: [hud.ai/evalsets/my](https://www.hud.ai/evalsets/my).
 
-### View Environments
+You can also initiate the same run from the CLI (task set JSON: [`remote_tasks.json`](https://github.com/vrn21/trading-rl-env/blob/main/remote_tasks.json)):
 
-Once imported and built, your environment is ready. The Environments view gives you a high-level look at all your active simulation worlds.
+```bash
+hud eval ./remote_tasks.json --model <model_id> --remote
+```
 
-![Environments view](/photos/rl-env-ss/envs%20view.png)
+An environment is "ready" only when you can explain both failures and successes from traces. Concretely, check for:
 
-### The trading-rl-env Details
+- **Reward hacking**: high score without accomplishing the real objective.
+- **Task ambiguity**: multiple reasonable interpretations, only one matches the grader.
+- **Leaky reset**: success depends on leftover state from prior runs.
+- **Tool/constraint mismatch**: tools make it easy to do the wrong thing (or impossible to do the right thing).
+- **Brittle graders**: checking an intermediate artifact instead of final state.
 
-Clicking into `trading-rl-env`, you can see specific details about your environment, such as available versions, settings, and integrated tools.
+### Train only after the contract stops moving
 
-![trading-rl-env details](/photos/rl-env-ss/trading-rl-env.png)
-
-### Create and Add Task Sets
-
-Next, group your tasks together by creating a Task Set. You can generate these from your scenario functions or upload task JSONs.
-
-![Tasksets](/photos/rl-env-ss/tasksets.png)
-
-![Adding Tasksets](/photos/rl-env-ss/adding%20taskset.png)
-
-### Choose a Model and Configure the Run
-
-Select the model you want to evaluate against these tasks. Keep configurations boring on your first run so you can baseline behavior accurately. Change one thing at a time.
-
-![Choosing model](/photos/rl-env-ss/choosing%20model%20in%20taskset.png)
-
-### Run Jobs and Monitor Progress
-
-Kick off the workload. You can scale this up and view multiple tasks running concurrently to evaluate behavior across different scenarios. Expect failures on the first pass—especially on multi-service environments.
-
-![Running tasks](/photos/rl-env-ss/running%20tasks.png)
-
-### Inspect Traces and Debug
-
-Traces are the ground truth of what the agent did: tool calls, tool outputs, intermediate reasoning, and the final graded state. When a run scores low, don’t guess—open a trace and look for the first real failure.
-
-![Trace view](/photos/rl-env-ss/trace.png)
-
-You can view an example of the task with traces from multiple runs [here](https://www.hud.ai/jobs/b6a9a4bf-9dc9-4b69-a6ba-11086f96510a).
-
-Common failure patterns you’ll see:
-
-- tool misuse (wrong args, wrong order of calls)
-- missing prerequisite steps (never polled fills, never checked portfolio)
-- constraint violations (over-sizing orders, invalid symbols)
-- brittle prompts (agent does something “reasonable” but not what the grader checks)
-- environment flakiness (timeouts, readiness races, intermittent API failures)
-
-When you use weighted sub-graders, a low score usually has a clean explanation (“profit missed target” vs “did nothing / never traded”). Use that to decide what to change:
-
-- If the agent didn’t trade: adjust prompt/tool affordances, or add guardrails that force progress.
-- If it traded but lost: adjust the task difficulty, the simulator assumptions, or the tool surface (not the grader, unless it’s wrong).
-- If it hit the objective but scored low: the grader is probably checking the wrong thing.
+1. **Fork a base model** — pick a trainable model and fork it so you own a versioned checkpoint.
+2. **Train** — select your environment version + task set, set run limits (episode count, max tool calls, timeouts).
+3. **Eval gates** — run an eval set between training runs to catch regressions early.
 
 
 
-## Transitioning to Training (Now that the world works)
+![Trained model](public/photos/rl-env-ss/trained_model.png)
 
-Once you’ve iterated through tasks, fixed the brittle prompts, and stopped the agent from gaming your grader, you have reached the actual starting line. You now have a verified, deterministic environment that produces ground-truth scores.
+This model in the case study is forked from GPT OSS 120B and trained for 6 RL runs on the same trading task set ([eval set](https://www.hud.ai/evalsets/82f53278-9c7b-4241-88f5-7bf2e7c0816e?tab=leaderboard)).
 
-Now (and only now) does it make sense to train. At this stage, your focus shifts from "building the world" to "improving the agent's policy within that world".
+Treat each result as a new checkpoint. Compare against the previous one on the same evals, inspect traces, keep the better head. If a run regresses or reward-hacks, **fix tasks/graders/reset and rerun** instead of stacking more training.
 
-### If you want to train, freeze the contract first
-Training only makes sense once you stop changing the target every day. Before you launch an RL run, freeze the basics for a versioned snapshot:
-- environment version (image/build)
-- task set (and its parameters)
-- grader behavior (including weights)
+RL trained models can be directly interacted with HUD's sdk/apis
 
 
-###  Pick a trainable base model, fork it, and start a training run
-On the HUD platform, training typically starts from a base model, then a fork.
+```python
+from hud.agents import OpenAIChatAgent
 
-1. **Start with a base model**: Go to **Models** and pick a base model that supports training for your account. You'll notice many options, but sticking to something well-documented to begin with is best.
-   ![Models list](/photos/rl-env-ss/models.png)
+agent = OpenAIChatAgent.create(model="<your-forked-model-id>")
+```
 
-2. **Fork it**: You need a model you own (and can version). Fork the base model to create a dedicated checkpoint for this specific RL environment.
-   ![Forking a model](/photos/rl-env-ss/forked%20model.png)
 
-3. **Configure the Training Run**: Click **Train Model**. This is where you connect the pieces: select the environment and the task set you just validated.
-
-You’ll need to configure the run parameters. You don't need to tweak everything immediately: start by setting the **task set**, followed by **number of jobs** (how many episodes to run) and **max tool calls** (to prevent infinite loops)
-
-![Training Job Configuration](/photos/rl-env-ss/training%20jb.png)
-
-Before you launch, the platform will estimate the expected timeline and cost for the run based on your parameters. This is a good sanity check to ensure you haven't accidentally queued up a $500, 3-day experiment!
-{/* ![Timeline and Cost Estimate](/photos/rl-env-ss/max%20tool%20calls.png) */}
-
-### Monitor the Training
-Once the training run has actually completed, HUD will provide you with a visual summary of the training process. You will be able to see exactly when the model learned (or failed to learn) the task over the course of the episodes.
-
-![Training Results Overview](/photos/rl-env-ss/ss%20after%20training.png)
-
-You can dive deeper into the metrics by looking at the specific graph outputs. This gives you a much better perspective on the reward trajectory and helps you determine if the agent actually converged on a stable policy or if it was just flailing randomly.
-
-![Model Training Graph](/photos/rl-env-ss/model%20graph.png)
-###  Treat the trained checkpoint like any other change
-After training, don’t just look at “score went up”. Re-run the same eval task set on:
-- the original base model
-- the trained checkpoint/fork
-
-Then inspect traces for differences. The two most common failure modes after training are (1) “it learned to game the grader” and (2) “it got better on the training tasks but worse on nearby cases”. If either is true, you need to fix tasks/graders/distribution before you run more training.
-
-### How to use your new model
-If the evaluation runs show genuine improvement without degrading on edge cases, you now have a specialized model. HUD gives you immediate API access to it. You can call this model exactly like you would any standard foundation model, but now it natively understands your environment's tools and constraints.
-
-![How to Use Model](/photos/rl-env-ss/how%20to%20use.png)
 
 ---
 
-# Conclusion — What “good” looks like
+## Best practices
 
-If you take one thing from this post, it should be this: building the _infrastructure_ for an RL environment is mostly straightforward engineering. The quality of what you get out is determined elsewhere.
+Most RL failures aren't "RL"—they're environment bugs. These are the practices that actually move outcomes:
 
-In practice, environment quality is dominated by three choices:
+1. **Match real usage, control the rest**: same APIs, state transitions, and workflow constraints as production—but stub what you can't control (mock external services, replay recorded responses, keep data local).
+2. **Deterministic reset**: each episode must start clean and repeatably. If resets aren't reproducible, your reward signal becomes noise.
+3. **Tasks are specs, not prompts**: define "done" clearly, include constraints, and parameterize difficulty so you train on a distribution—not one handcrafted case.
+4. **Grade from ground truth**: tests, DB state, simulator truth, logs. Add invariants and secondary signals to close obvious loopholes ([Faulty reward functions](https://openai.com/research/faulty-reward-functions), [Concrete Problems in AI Safety](https://research.google/pubs/concrete-problems-in-ai-safety/)).
+5. **Keep tools boring and typed**: narrow schemas, structured returns, explicit error modes, sensible limits so "exploration" can't become "break the system."
+6. **Trace everything you need to explain a score**: tool calls, tool outputs, key state snapshots, grader breakdown. If you can't explain failures *and* successes from traces, iterate on the contract before you scale training.
 
-1. **Tasks** — whether your task specs are unambiguous, cover the real distribution, and constrain the agent toward the behavior you actually want.
-2. **Graders** — whether you score from ground truth, avoid obvious loopholes, and produce a signal that distinguishes “did nothing”, "succeeded" and "reward hacking".
-3. **Trace debugging** — whether you can consistently explain failures by replaying what happened and iterating on the environment contract (tools, setup/reset, prompts, grading) instead of guessing.
+---
 
-Get those right and you have something you can improve over time. Get them wrong and RL will faithfully optimize the wrong objective, faster than you expect.
+## Conclusion
 
-Good luck building your own RL environments. If you want to avoid rebuilding the plumbing, HUD is one viable infrastructure option to standardize builds, runs, and trace capture—so your effort stays focused on tasks, graders, and iteration.
+If you have a model that needs to get reliably good at a specific workflow, RL on custom, verifiable tasks is one of the cleanest post-training paths to get there.
 
-If you still have some doubts about rl envs, feel free to reach out to me hello@vrn21.com or to founders@hud.ai
+The loop: build a resettable environment, write clear tasks, grade from ground truth, iterate with traces until the contract is trustworthy, then train and validate a checkpoint you can actually deploy.
 
-**Links:**
-- [Trading RL Environment GitHub Repo](https://github.com/vrn21/trading-rl-env)
-- [HUD Platform Documentation](https://docs.hud.ai)
+If you still have questions, feel free to contact me  `hello@vrn21.com`
