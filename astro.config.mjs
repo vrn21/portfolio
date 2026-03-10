@@ -13,7 +13,7 @@ import opengraphImages, { presets } from "astro-opengraph-images";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://astrofolio.pages.dev",
+  site: "https://www.vrn21.com",
   redirects: {
     "/github": "https://github.com/vrn21",
     "/linkedin": "https://linkedin.com/in/hi-from-varun-",
