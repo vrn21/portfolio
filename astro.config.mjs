@@ -19,7 +19,7 @@ export default defineConfig({
     "/linkedin": "https://linkedin.com/in/hi-from-varun-",
     "/twitter": "https://x.com/theVRN21",
     "/design": "https://www.figma.com/design/lLZ2Vxs5FLIAhwlUDUuC0V/PortFolio",
-    "/resume": "https://drive.google.com/file/d/1gvhOOA8nXs7_3gknZJkogIGqdoRl-I_I/view?usp=sharing",
+    "/resume": "https://drive.google.com/file/d/1wkBOvRx2_-RF6CKUrl4jbDgslqisPWGa/view?usp=sharing",
   },
   integrations: [
     mdx({
